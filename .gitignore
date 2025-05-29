@@ -1,0 +1,7 @@
+# Folder hasil build dan distribusi
+/build/
+/dist/
+
+# File-file spesifik jika perlu
+*.exe
+*.pkg
