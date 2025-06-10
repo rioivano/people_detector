@@ -1,5 +1,5 @@
 import cv2
-from flask import Flask, jsonify, Response, stream_with_context
+from flask import Flask, jsonify, Response, stream_with_context, request
 from ultralytics import YOLO
 import time
 
@@ -8,6 +8,7 @@ last_detected_time = 0
 cooldown_seconds = 3
 last_people_count = 0
 allow_display = False
+detection_active = True  # default menyala
 
 # ======= Tanya Index Kamera dari User =======
 def minta_input_index_kamera():
@@ -18,7 +19,8 @@ def minta_input_index_kamera():
         print("❌ Input tidak valid. Gunakan angka saja.")
         exit(1)
 
-CAMERA_INDEX = minta_input_index_kamera()
+# CAMERA_INDEX = minta_input_index_kamera()
+CAMERA_INDEX = 4
 
 # ======= Inisialisasi Kamera =======
 camera = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
@@ -35,10 +37,29 @@ print(model.names)
 # ======= Setup Flask =======
 app = Flask(__name__)
 
+def deactivate_camera():
+    global camera
+    if camera.isOpened():
+        camera.release()
+        print("📷 Kamera dimatikan sementara.")
+
+def activate_camera():
+    global camera, CAMERA_INDEX
+    if not camera.isOpened():
+        camera = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        print("📷 Kamera diaktifkan kembali.")
+
 def gen_frames():
-    global last_detected_time, last_people_count, allow_display
+    global last_detected_time, last_people_count, allow_display, detection_active
 
     while True:
+        if not detection_active:
+            # Jika deteksi dimatikan, tunggu sebentar dan skip kamera
+            time.sleep(0.1)
+            continue
+
         success, frame = camera.read()
         if not success:
             print("⚠️ Gagal membaca frame dari kamera.")
@@ -65,7 +86,6 @@ def gen_frames():
         if not allow_display and (current_time - last_detected_time >= cooldown_seconds):
             allow_display = True
 
-        # Gambar jika delay selesai
         if allow_display:
             for box in results[0].boxes.data:
                 x1, y1, x2, y2, conf, cls = box.tolist()
@@ -78,11 +98,25 @@ def gen_frames():
             cv2.putText(annotated_frame, f"Total people: {count_now}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-        # Kirim frame
         ret, buffer = cv2.imencode('.jpg', annotated_frame)
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+     
+
+@app.route('/set_detector', methods=['POST'])
+def set_detector():
+    global detection_active
+    data = request.get_json()
+    detection_active = data.get('active', True)
+    print(f"Detection status updated to: {detection_active}")
+
+    if detection_active:
+        activate_camera()
+    else:
+        deactivate_camera()
+
+    return jsonify({'success': True, 'active': detection_active})
 
 @app.route('/video')
 def video():
@@ -91,7 +125,13 @@ def video():
 
 @app.route('/detect')
 def detect_people():
-    global last_detected_time, last_people_count
+    global last_detected_time, last_people_count, detection_active
+
+    if not detection_active:
+        return jsonify({
+            "people": -1,
+            "status": "detektor dimatikan oleh pengguna"
+        })
 
     success, frame = camera.read()
     if not success:
@@ -123,5 +163,5 @@ def snapshot():
     return Response(buffer.tobytes(), mimetype='image/jpeg')
 
 if __name__ == '__main__':
-    print("🚀 Menjalankan server deteksi di http://localhost:5000")
-    app.run(host="0.0.0.0", port=5000)
+    print("🚀 Menjalankan server deteksi di http://localhost:9100")
+    app.run(host="0.0.0.0", port=9100)
